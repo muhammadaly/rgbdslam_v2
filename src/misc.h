@@ -23,6 +23,7 @@
 #include "point_types.h"
 #include "g2o/types/slam3d/vertex_se3.h"
 
+
 ///Overlay the monochrom edges and depth jumps
 void overlay_edges(cv::Mat visual, cv::Mat depth, cv::Mat& visual_edges, cv::Mat& depth_edges);
 ///Print tf::Transform via ROS_INFO

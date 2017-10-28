@@ -28,6 +28,17 @@ using namespace g2o;
 
 typedef g2o::VertexPointXYZ  feature_vertex_type;
 typedef g2o::EdgeSE3PointXYZDepth feature_edge_type;
+
+
+
+static const int ORBFeatureVectorLength = 32;
+static const int SIFTFeatureVectorLength = 128;
+
+typedef pcl::Histogram<ORBFeatureVectorLength> ORBFeatureT;
+typedef pcl::PointCloud<ORBFeatureT> ORBFeatureCloudT;
+typedef pcl::Histogram<SIFTFeatureVectorLength> SIFTFeatureT;
+typedef pcl::PointCloud<SIFTFeatureT> SIFTFeatureCloudT;
+
 //TODO: Make a class of this, with optimizerSetup being the constructor.
 //      getTransformFromMatchesG2O into a method for adding a node that 
 //      can be called as often as desired and one evaluation method.
@@ -70,18 +81,18 @@ std::pair<g2o::VertexSE3*, g2o::VertexSE3*>  sensorVerticesSetup(g2o::SparseOpti
       g2o::SE3Quat cam2(q,t);
 
       vc2->setEstimate(cam2);
-      vc2->setId(1); 
+      vc2->setId(1);
       vc2->setFixed(true);
       optimizer.addVertex(vc2);
     }
 
     g2o::VertexSE3 *vc1 = new VertexSE3();
     {
-      Eigen::Quaterniond q(tf_estimate.topLeftCorner<3,3>().cast<double>());//initialize rotation from estimate 
+      Eigen::Quaterniond q(tf_estimate.topLeftCorner<3,3>().cast<double>());//initialize rotation from estimate
       Eigen::Vector3d t(tf_estimate.topRightCorner<3,1>().cast<double>());  //initialize translation from estimate
       g2o::SE3Quat cam1(q,t);
       vc1->setEstimate(cam1);
-      vc1->setId(0);  
+      vc1->setId(0);
       optimizer.addVertex(vc1);
     }
 
@@ -106,7 +117,7 @@ feature_edge_type* edgeToFeature(const Node* node,
      edge->setInformation(info_mat);
      feature_vertex->setEstimate(position.cast<double>().head<3>());
 
-   } 
+   }
    else {//FIXME instead of using an arbitrary depth value and high uncertainty, use the correct vertex type (on the other hand Rainer suggested this proceeding too)
      Eigen::Vector3d pix_d(kp.pt.x,kp.pt.y,10.0);
      //ROS_INFO_STREAM("Edge from camera to position "<< pix_d.transpose());
@@ -164,10 +175,68 @@ void getTransformFromMatchesG2O(const Node* earlier_node,
   optimizer->computeActiveErrors();
 
   //g2o::SE3Quat final_transformation =  cams.first->estimateAsSE3Quat().inverse();
-  //transformation_estimate = final_transformation.to_homogeneous_matrix().cast<float>(); 
+  //transformation_estimate = final_transformation.to_homogeneous_matrix().cast<float>();
   transformation_estimate = cams.first->estimate().cast<float>().inverse().matrix();
   delete optimizer;
 }
+
+void getKeypointsAndDescriptors(std::vector<cv::DMatch> matches,
+                                              std::vector<cv::KeyPoint> previousKeypoints, std::vector<cv::KeyPoint> currentKeypoints,
+                                              cv::Mat previousDescriptors , cv::Mat currentDescriptors,
+                                              FrameData previousFrameData, FrameData currentFrameData,
+                                              pointcloud_type::Ptr previousKeypointsPointCloud, pointcloud_type::Ptr currentKeypointsPointCloud,
+                                              ORBFeatureCloudT::Ptr previousFeaturesPointCloud, ORBFeatureCloudT::Ptr currentFeaturesPointCloud)
+{
+  float Z , factor = 5000;
+  cv::Mat currentDepthImage = currentFrameData.getDepthMatrix();
+  cv::Mat previousDepthImage = previousFrameData.getDepthMatrix();
+
+  cv::KeyPoint currentKeypoint , previousKeypoint;
+  int rowInd , colInd;
+  for(size_t matchInd = 1 ;matchInd < matches.size() ; matchInd++)
+  {
+      currentKeypoint = currentKeypoints[matches[matchInd].queryIdx];
+      previousKeypoint = previousKeypoints[matches[matchInd].trainIdx];
+
+      rowInd = previousKeypoint.pt.y;
+      colInd = previousKeypoint.pt.x;
+      Z = previousDepthImage.at<u_int16_t>(rowInd , colInd) / factor;
+
+      visual_slam::PointT p;
+      p.x = ((colInd - visual_slam::cx) * Z )/visual_slam::fx;
+      p.y = ((previousKeypoint.pt.y - visual_slam::cy) * Z )/visual_slam::fy;
+      p.z = Z;
+      previousKeypointsPointCloud->points.push_back(p);
+
+      visual_slam::FeatureT PCLDescriptor;
+      for(int ind = 0 ; ind < previousDescriptors.cols; ind++)
+      {
+          PCLDescriptor.histogram[ind] = previousDescriptors.at<float>(matches[matchInd].trainIdx,ind);
+      }
+      previousFeaturesPointCloud->points.push_back(PCLDescriptor);
+
+      rowInd = currentKeypoint.pt.y;
+      colInd = currentKeypoint.pt.x;
+
+      Z = currentDepthImage.at<u_int16_t>(rowInd , colInd) / factor;
+
+      visual_slam::PointT p2;
+      p2.x = ((colInd - visual_slam::cx) * Z )/visual_slam::fx;
+      p2.y = ((rowInd - visual_slam::cy) * Z )/visual_slam::fy;
+      p2.z = Z;
+      currentKeypointsPointCloud->points.push_back(p2);
+
+      visual_slam::FeatureT PCLDescriptor2;
+      for(int ind = 0 ; ind < currentDescriptors.cols; ind++)
+      {
+          PCLDescriptor2.histogram[ind] = currentDescriptors.at<float>(matches[matchInd].queryIdx,ind);
+      }
+      currentFeaturesPointCloud->points.push_back(PCLDescriptor2);
+
+  }
+  //        visualizePointCloud(previousSelectedPointCloud , currentSelectedPointCloud);
+}
+
 
 void getTransformFromMatchesPCL(const Node* earlier_node,
                                 const Node* newer_node,
@@ -185,6 +254,7 @@ void getTransformFromMatchesPCL(const Node* earlier_node,
   float MaxCorrespondenceDistance = 2.5f* leaf; // Inlier threshold 0.015
   float InlierFraction = 0.25f; // Required inlier fraction for accepting a pose hypothesis
 
+  getKeypointsAndDescriptors(matches,)
   pcl::SampleConsensusPrerejective<PointT,PointT,FeatureT> align;
   align.setInputSource(secondPC);
   align.setSourceFeatures(secondPCFeatures);
