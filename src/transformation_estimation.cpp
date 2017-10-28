@@ -22,6 +22,10 @@
 #include "g2o/core/optimization_algorithm_levenberg.h"
 #include "g2o/core/robust_kernel_impl.h"
 
+#include <pcl/kdtree/kdtree_flann.h>
+#include <pcl/kdtree/impl/kdtree_flann.hpp>
+#include <pcl/registration/sample_consensus_prerejective.h>
+
 using namespace Eigen;
 using namespace std;
 using namespace g2o;
@@ -29,15 +33,6 @@ using namespace g2o;
 typedef g2o::VertexPointXYZ  feature_vertex_type;
 typedef g2o::EdgeSE3PointXYZDepth feature_edge_type;
 
-
-
-static const int ORBFeatureVectorLength = 32;
-static const int SIFTFeatureVectorLength = 128;
-
-typedef pcl::Histogram<ORBFeatureVectorLength> ORBFeatureT;
-typedef pcl::PointCloud<ORBFeatureT> ORBFeatureCloudT;
-typedef pcl::Histogram<SIFTFeatureVectorLength> SIFTFeatureT;
-typedef pcl::PointCloud<SIFTFeatureT> SIFTFeatureCloudT;
 
 //TODO: Make a class of this, with optimizerSetup being the constructor.
 //      getTransformFromMatchesG2O into a method for adding a node that 
@@ -180,69 +175,10 @@ void getTransformFromMatchesG2O(const Node* earlier_node,
   delete optimizer;
 }
 
-void getKeypointsAndDescriptors(std::vector<cv::DMatch> matches,
-                                              std::vector<cv::KeyPoint> previousKeypoints, std::vector<cv::KeyPoint> currentKeypoints,
-                                              cv::Mat previousDescriptors , cv::Mat currentDescriptors,
-                                              FrameData previousFrameData, FrameData currentFrameData,
-                                              pointcloud_type::Ptr previousKeypointsPointCloud, pointcloud_type::Ptr currentKeypointsPointCloud,
-                                              ORBFeatureCloudT::Ptr previousFeaturesPointCloud, ORBFeatureCloudT::Ptr currentFeaturesPointCloud)
-{
-  float Z , factor = 5000;
-  cv::Mat currentDepthImage = currentFrameData.getDepthMatrix();
-  cv::Mat previousDepthImage = previousFrameData.getDepthMatrix();
-
-  cv::KeyPoint currentKeypoint , previousKeypoint;
-  int rowInd , colInd;
-  for(size_t matchInd = 1 ;matchInd < matches.size() ; matchInd++)
-  {
-      currentKeypoint = currentKeypoints[matches[matchInd].queryIdx];
-      previousKeypoint = previousKeypoints[matches[matchInd].trainIdx];
-
-      rowInd = previousKeypoint.pt.y;
-      colInd = previousKeypoint.pt.x;
-      Z = previousDepthImage.at<u_int16_t>(rowInd , colInd) / factor;
-
-      visual_slam::PointT p;
-      p.x = ((colInd - visual_slam::cx) * Z )/visual_slam::fx;
-      p.y = ((previousKeypoint.pt.y - visual_slam::cy) * Z )/visual_slam::fy;
-      p.z = Z;
-      previousKeypointsPointCloud->points.push_back(p);
-
-      visual_slam::FeatureT PCLDescriptor;
-      for(int ind = 0 ; ind < previousDescriptors.cols; ind++)
-      {
-          PCLDescriptor.histogram[ind] = previousDescriptors.at<float>(matches[matchInd].trainIdx,ind);
-      }
-      previousFeaturesPointCloud->points.push_back(PCLDescriptor);
-
-      rowInd = currentKeypoint.pt.y;
-      colInd = currentKeypoint.pt.x;
-
-      Z = currentDepthImage.at<u_int16_t>(rowInd , colInd) / factor;
-
-      visual_slam::PointT p2;
-      p2.x = ((colInd - visual_slam::cx) * Z )/visual_slam::fx;
-      p2.y = ((rowInd - visual_slam::cy) * Z )/visual_slam::fy;
-      p2.z = Z;
-      currentKeypointsPointCloud->points.push_back(p2);
-
-      visual_slam::FeatureT PCLDescriptor2;
-      for(int ind = 0 ; ind < currentDescriptors.cols; ind++)
-      {
-          PCLDescriptor2.histogram[ind] = currentDescriptors.at<float>(matches[matchInd].queryIdx,ind);
-      }
-      currentFeaturesPointCloud->points.push_back(PCLDescriptor2);
-
-  }
-  //        visualizePointCloud(previousSelectedPointCloud , currentSelectedPointCloud);
-}
-
-
 void getTransformFromMatchesPCL(const Node* earlier_node,
                                 const Node* newer_node,
                                 const std::vector<cv::DMatch> & matches,
-                                Eigen::Matrix4f& transformation_estimate, //Input (initial guess) and Output
-                                int iterations)
+                                Eigen::Matrix4f& transformation_estimate)
 {
   ScopedTimer s(__FUNCTION__);
 
@@ -254,12 +190,18 @@ void getTransformFromMatchesPCL(const Node* earlier_node,
   float MaxCorrespondenceDistance = 2.5f* leaf; // Inlier threshold 0.015
   float InlierFraction = 0.25f; // Required inlier fraction for accepting a pose hypothesis
 
-  getKeypointsAndDescriptors(matches,)
-  pcl::SampleConsensusPrerejective<PointT,PointT,FeatureT> align;
-  align.setInputSource(secondPC);
-  align.setSourceFeatures(secondPCFeatures);
-  align.setInputTarget(firstPC);
-  align.setTargetFeatures(firstPCFeatures);
+  pointcloud_type::Ptr tCurrentKeypointsPC (new pointcloud_type),tPreviousKeypointsPC (new pointcloud_type), alignedPC(new pointcloud_type) ;
+  ORBFeatureCloudT::Ptr tCurrentDescriptorsPC (new ORBFeatureCloudT),tPreviousDescriptorsPC (new ORBFeatureCloudT);
+
+
+  getKeypointsAndDescriptors(matches,earlier_node->feature_descriptors_, newer_node->feature_descriptors_ ,earlier_node->feature_locations_3d_, newer_node->feature_locations_3d_,
+                             tPreviousKeypointsPC, tCurrentKeypointsPC, tPreviousDescriptorsPC, tCurrentDescriptorsPC);
+
+  pcl::SampleConsensusPrerejective<point_type,point_type,ORBFeatureT> align;
+  align.setInputSource(tPreviousKeypointsPC);
+  align.setSourceFeatures(tPreviousDescriptorsPC);
+  align.setInputTarget(tCurrentKeypointsPC);
+  align.setTargetFeatures(tCurrentDescriptorsPC);
 
   align.setMaximumIterations(MaximumIterations); // Number of RANSAC iterations
   align.setNumberOfSamples(NumberOfSamples); // Number of points to sample for generating/prerejecting a pose

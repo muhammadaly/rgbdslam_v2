@@ -52,9 +52,6 @@
 #include <sensor_msgs/Image.h>
 #include <sensor_msgs/CameraInfo.h>
 
-typedef std::vector<Eigen::Vector4f, Eigen::aligned_allocator<Eigen::Vector4f> > std_vector_of_eigen_vector4f;
-
-
 static void getCameraIntrinsics(float& fx, float& fy, float& cx, float& cy, const sensor_msgs::CameraInfo& cam_info) 
 {
   ParameterServer* ps = ParameterServer::instance();
@@ -638,94 +635,46 @@ pointcloud_type* createXYZRGBPointCloud (const sensor_msgs::ImageConstPtr& depth
 }
 
 void getKeypointsAndDescriptors (std::vector<cv::DMatch> matches,
-                                 std::vector<cv::KeyPoint> previousKeypoints, std::vector<cv::KeyPoint> currentKeypoints,
                                  cv::Mat previousDescriptors , cv::Mat currentDescriptors,
-                                 FrameData previousFrameData, FrameData currentFrameData,
                                  std_vector_of_eigen_vector4f previousKeypoints3D , std_vector_of_eigen_vector4f currentKeypoints3D,
                                  pointcloud_type::Ptr previousKeypointsPointCloud, pointcloud_type::Ptr currentKeypointsPointCloud,
                                  ORBFeatureCloudT::Ptr previousFeaturesPointCloud, ORBFeatureCloudT::Ptr currentFeaturesPointCloud)
 {
   ScopedTimer s(__FUNCTION__);
-  previousKeypointsPointCloud->is_dense         = false; //single point of view, 2d rasterized NaN where no depth value was found
 
-  float fxinv, fyinv, cx, cy;
-  getCameraIntrinsicsInverseFocalLength(fxinv, fyinv, cx, cy, *cam_info);
-  ParameterServer* ps = ParameterServer::instance();
-  int data_skip_step = ps->get<int>("cloud_creation_skip_step");
-  if(depth_img.rows % data_skip_step != 0 || depth_img.cols % data_skip_step != 0){
-    ROS_WARN("The parameter cloud_creation_skip_step is not a divisor of the depth image dimensions. This will most likely crash the program!");
-  }
-  cloud->height = ceil(depth_img.rows / static_cast<float>(data_skip_step));
-  cloud->width = ceil(depth_img.cols / static_cast<float>(data_skip_step));
-  int pixel_data_size = 3;
-  //Assume RGB
-  char red_idx = 0, green_idx = 1, blue_idx = 2;
-  if(rgb_img.type() == CV_8UC1) pixel_data_size = 1;
-  else if(ps->get<bool>("encoding_bgr")) { red_idx = 2; blue_idx = 0; }
-
-  unsigned int color_row_step, color_pix_step, depth_pix_step, depth_row_step;
-  color_pix_step = pixel_data_size * (rgb_img.cols / cloud->width);
-  color_row_step = pixel_data_size * (rgb_img.rows / cloud->height -1 ) * rgb_img.cols;
-  depth_pix_step = (depth_img.cols / cloud->width);
-  depth_row_step = (depth_img.rows / cloud->height -1 ) * depth_img.cols;
-
-  cloud->points.resize (matches.size());
-
-  //const uint8_t* rgb_buffer = &rgb_msg->data[0];
-
-  // depth_img already has the desired dimensions, but rgb_img may be higher res.
-  int color_idx = 0 * color_pix_step - 0 * color_row_step, depth_idx = 0; //FIXME: Hack for hard-coded calibration of color to depth
-  double depth_scaling = ps->get<double>("depth_scaling_factor");
-  float max_depth = ps->get<double>("maximum_depth");
-  float min_depth = ps->get<double>("minimum_depth");
-  if(max_depth < 0.0) max_depth = std::numeric_limits<float>::infinity();
-
-  //Main Looop
-  pointcloud_type::iterator pt_iter = cloud->begin();
-  for (int matchInd = 0 ; matchInd < matches.size(); ++matchInd)
+  Eigen::Vector4f current3DKeypoint , previous3DKeypoint;
+  for(size_t matchInd = 1 ;matchInd < matches.size() ; matchInd++)
   {
-    if(pt_iter == cloud->end()){
-      break;
-    }
-    point_type& pt = *pt_iter;
-    if(u < 0 || v < 0 || u >= depth_img.cols || v >= depth_img.rows){
-      pt.x = pt.y = pt.z = std::numeric_limits<float>::quiet_NaN();
-      continue;
-    }
+      current3DKeypoint = currentKeypoints3D[matches[matchInd].queryIdx];
+      previous3DKeypoint = previousKeypoints3D[matches[matchInd].trainIdx];
 
-    float Z = depth_img.at<float>(depth_idx) * depth_scaling;
+      point_type p;
+      p.x = previous3DKeypoint(0);
+      p.y = previous3DKeypoint(1);
+      p.z = previous3DKeypoint(2);
+      previousKeypointsPointCloud->points.push_back(p);
 
-    // Check for invalid measurements
-    if (!(Z >= min_depth)) //Should also be trigger on NaN//std::isnan (Z))
-    {
-      pt.x = (u - cx) * 1.0 * fxinv; //FIXME: better solution as to act as at 1meter?
-      pt.y = (v - cy) * 1.0 * fyinv;
-      pt.z = std::numeric_limits<float>::quiet_NaN();
-    }
-    else // Fill in XYZ
-    {
-      backProject(fxinv, fyinv, cx, cy, u, v, Z, pt.x, pt.y, pt.z);
-    }
-    // Fill in color
-    RGBValue color;
-    if(color_idx > 0 && color_idx < rgb_img.total()*color_pix_step){ //Only necessary because of the color_idx offset
-      if(pixel_data_size == 3){
-        color.Red   = rgb_img.at<uint8_t>(color_idx + red_idx);
-        color.Green = rgb_img.at<uint8_t>(color_idx + green_idx);
-        color.Blue  = rgb_img.at<uint8_t>(color_idx + blue_idx);
-      } else {
-        color.Red   = color.Green = color.Blue  = rgb_img.at<uint8_t>(color_idx);
+      ORBFeatureT PCLDescriptor;
+      for(int ind = 0 ; ind < previousDescriptors.cols; ind++)
+      {
+          PCLDescriptor.histogram[ind] = previousDescriptors.at<float>(matches[matchInd].trainIdx,ind);
       }
-      color.Alpha = 0;
-#ifndef RGB_IS_4TH_DIM
-      pt.rgb = color.float_value;
-#else
-      pt.data[3] = color.float_value;
-#endif
-    }
-  }
+      previousFeaturesPointCloud->points.push_back(PCLDescriptor);
 
-  return cloud;
+      point_type p2;
+      p2.x = current3DKeypoint(0);
+      p2.y = current3DKeypoint(1);
+      p2.z = current3DKeypoint(2);
+      currentKeypointsPointCloud->points.push_back(p2);
+
+      ORBFeatureT PCLDescriptor2;
+      for(int ind = 0 ; ind < currentDescriptors.cols; ind++)
+      {
+          PCLDescriptor2.histogram[ind] = currentDescriptors.at<float>(matches[matchInd].queryIdx,ind);
+      }
+      currentFeaturesPointCloud->points.push_back(PCLDescriptor2);
+
+  }
 }
 double errorFunction(const Eigen::Vector4f& x1, const double x1_depth_cov, 
                      const Eigen::Vector4f& x2, const double x2_depth_cov, 

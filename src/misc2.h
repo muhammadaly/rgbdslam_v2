@@ -16,6 +16,18 @@
  * along with RGBDSLAM.  If not, see <http://www.gnu.org/licenses/>.
  */
 #include "parameter_server.h"
+#include <cv.h>
+#include "point_types.h"
+
+typedef std::vector<Eigen::Vector4f, Eigen::aligned_allocator<Eigen::Vector4f> > std_vector_of_eigen_vector4f;
+
+static const int ORBFeatureVectorLength = 32;
+static const int SIFTFeatureVectorLength = 128;
+
+typedef pcl::Histogram<ORBFeatureVectorLength> ORBFeatureT;
+typedef pcl::PointCloud<ORBFeatureT> ORBFeatureCloudT;
+typedef pcl::Histogram<SIFTFeatureVectorLength> SIFTFeatureT;
+typedef pcl::PointCloud<SIFTFeatureT> SIFTFeatureCloudT;
 
 inline double depth_std_dev(double depth)
 {
@@ -63,4 +75,9 @@ inline void backProject(const float& fxinv, const float& fyinv,
   out_y = (v - cy) * z * fyinv;
   out_z = z;
 }
+void getKeypointsAndDescriptors (std::vector<cv::DMatch> matches,
+                                 cv::Mat previousDescriptors , cv::Mat currentDescriptors,
+                                 std_vector_of_eigen_vector4f previousKeypoints3D , std_vector_of_eigen_vector4f currentKeypoints3D,
+                                 pointcloud_type::Ptr previousKeypointsPointCloud, pointcloud_type::Ptr currentKeypointsPointCloud,
+                                 ORBFeatureCloudT::Ptr previousFeaturesPointCloud, ORBFeatureCloudT::Ptr currentFeaturesPointCloud);
 #endif
